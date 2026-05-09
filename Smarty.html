@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Mini Mario Run – iPad Deluxe</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #6ec5ff;
+    overflow: hidden;
+    touch-action: none;
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+  canvas {
+    display: block;
+    background: #6ec5ff;
+    touch-action: none;
+  }
+  #hud {
+    position: fixed;
+    top: 8px;
+    left: 8px;
+    right: 8px;
+    display: flex;
+    justify-content: space-between;
+    color: white;
+    font-size: 16px;
+    text-shadow: 0 2px 3px rgba(0,0,0,0.6);
+    z-index: 10;
+    pointer-events: none;
+  }
+  #hud span {
+    pointer-events: auto;
+  }
+  #centerMsg {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: white;
+    font-size: 22px;
+    text-align: center;
+    background: rgba(0,0,0,0.7);
+    padding: 16px 24px;
+    border-radius: 10px;
+    z-index: 30;
+  }
+  #menu, #shop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.7);
+    color: white;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    z-index: 25;
+  }
+  .menuBtn {
+    padding: 10px 18px;
+    border-radius: 8px;
+    background: #2196f3;
+    color: white;
+    font-size: 18px;
+    border: none;
+  }
+  .menuBtn:active {
+    transform: scale(0.97);
+  }
+  #touchControls {
+    position: fixed;
+    bottom: 20px;
+    left: 0;
+    right: 0;
+    display: flex;
+    justify-content: space-between;
+    padding: 0 40px;
+    z-index: 20;
+    pointer-events: none;
+  }
+  .btnGroup {
+    display: flex;
+    gap: 20px;
+  }
+  .btn {
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    background: rgba(0,0,0,0.35);
+    border: 3px solid rgba(255,255,255,0.7);
+    color: white;
+    font-size: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: auto;
+    user-select: none;
+  }
+</style>
+</head>
+<body>
+
+<canvas id="game" width="900" height="500"></canvas>
+
+<div id="hud">
+  <span>Coins: <span id="coins">0</span></span>
+  <span>Lives: <span id="lives">3</span></span>
+  <span>Time: <span id="time">0.0</span>s</span>
+  <span style="text-decoration:underline;cursor:pointer;" id="shopBtn">Shop</span>
+</div>
+
+<div id="centerMsg" style="display:none;"></div>
+
+<div id="menu">
+  <h2>Mini Mario Run – iPad</h2>
+  <button class="menuBtn" data-level="0">Play Level 1</button>
+  <button class="menuBtn" data-level="1">Play Level 2</button>
+  <button class="menuBtn" id="openShopFromMenu">Coin Shop</button>
+</div>
+
+<div id="shop" style="display:none;">
+  <h2>Coin Shop</h2>
+  <p>Coins: <span id="shopCoins">0</span></p>
+  <button class="menuBtn" data-skin="default">Default (Free)</button>
+  <button class="menuBtn" data-skin="red">Red Suit – 10 coins</button>
+  <button class="menuBtn" data-skin="blue">Blue Suit – 10 coins</button>
+  <button class="menuBtn" data-skin="gold">Gold Suit – 25 coins</button>
+  <button class="menuBtn" id="closeShop">Back</button>
+</div>
+
+<div id="touchControls">
+  <div class="btnGroup">
+    <div class="btn" id="btnLeft">←</div>
+    <div class="btn" id="btnRight">→</div>
+  </div>
+  <div class="btnGroup">
+    <div class="btn" id="btnJump">A</div>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+const coinsEl = document.getElementById("coins");
+const livesEl = document.getElementById("lives");
+const timeEl = document.getElementById("time");
+const centerMsg = document.getElementById("centerMsg");
+const menu = document.getElementById("menu");
+const shop = document.getElementById("shop");
+const shopCoinsEl = document.getElementById("shopCoins");
+const shopBtn = document.getElementById("shopBtn");
+
+let gameState = "menu"; // "menu", "game", "shop"
+let currentLevelIndex = 0;
+let coins = 0;
+let lives = 3;
+let startTime = 0;
+let elapsedTime = 0;
+let skin = "default";
+
+// Simple sounds (may or may not play depending on Safari settings)
+const sndCoin = new Audio("data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=");
+const sndJump = new Audio("data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=");
+const sndStomp = new Audio("data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=");
+const sndWin = new Audio("data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=");
+
+// Physics
+const gravity = 2000;
+const moveSpeed = 260;
+const jumpSpeed = 750;
+const tileSize = 50;
+
+// Player
+const player = {
+  x: 100,
+  y: 0,
+  vx: 0,
+  vy: 0,
+  w: 32,
+  h: 46,
+  onGround: false,
+  facing: 1
+};
+
+let cameraX = 0;
+
+// Input
+const keys = { left: false, right: false, jump: false };
+
+// Touch controls
+function bindTouch(btn, prop) {
+  btn.addEventListener("touchstart", e => {
+    e.preventDefault();
+    keys[prop] = true;
+  });
+  btn.addEventListener("touchend", e => {
+    e.preventDefault();
+    keys[prop] = false;
+  });
+  btn.addEventListener("touchcancel", e => {
+    e.preventDefault();
+    keys[prop] = false;
+  });
+}
+bindTouch(document.getElementById("btnLeft"), "left");
+bindTouch(document.getElementById("btnRight"), "right");
+bindTouch(document.getElementById("btnJump"), "jump");
+
+// Levels: tiles + enemies + moving platforms
+// tile: 0 empty, 1 ground, 2 coin, 3 flag
+const levels = [
+  {
+    width: 60,
+    height: 10,
+    tiles: [],
+    enemies: [
+      {x: 600, y: 9*tileSize-25, dir: -1, minX: 550, maxX: 750},
+      {x: 1200, y: 9*tileSize-25, dir: 1, minX: 1150, maxX: 1350}
+    ],
+    platforms: [
+      {x: 900, y: 7*tileSize, w: tileSize*2, h: 10, dir: 1, minX: 850, maxX: 1050}
+    ]
+  },
+  {
+    width: 70,
+    height: 10,
+    tiles: [],
+    enemies: [
+      {x: 800, y: 9*tileSize-25, dir: 1, minX: 750, maxX: 950},
+      {x: 1500, y: 7*tileSize-25, dir: -1, minX: 1400, maxX: 1650}
+    ],
+    platforms: [
+      {x: 600, y: 6*tileSize, w: tileSize*2, h: 10, dir: 1, minX: 550, maxX: 800},
+      {x: 1300, y: 5*tileSize, w: tileSize*2, h: 10, dir: -1, minX: 1200, maxX: 1500}
+    ]
+  }
+];
+
+// Build tile maps
+function buildLevelData() {
+  levels.forEach((lvl, idx) => {
+    const w = lvl.width;
+    const h = lvl.height;
+    lvl.tiles = [];
+    for (let x = 0; x < w; x++) {
+      lvl.tiles[x] = [];
+      for (let y = 0; y < h; y++) lvl.tiles[x][y] = 0;
+    }
+    // Ground
+    for (let x = 0; x < w; x++) lvl.tiles[x][h-1] = 1;
+    // Platforms & coins per level
+    if (idx === 0) {
+      [5,10,15,20,25,30,35,40,45,50].forEach(x => lvl.tiles[x][7] = 1);
+      [8,14,22,28,36,44].forEach(x => lvl.tiles[x][5] = 2);
+      lvl.tiles[55][8] = 3;
+    } else {
+      [6,12,18,24,30,36,42,48,54,60].forEach(x => lvl.tiles[x][7] = 1);
+      [9,16,23,31,39,47,55].forEach(x => lvl.tiles[x][5] = 2);
+      lvl.tiles[65][8] = 3;
+    }
+  });
+}
+buildLevelData();
+
+function currentLevel() {
+  return levels[currentLevelIndex];
+}
+
+function tileAt(px, py) {
+  const lvl = currentLevel();
+  const tx = Math.floor(px / tileSize);
+  const ty = Math.floor(py / tileSize);
+  if (tx < 0 || tx >= lvl.width || ty < 0 || ty >= lvl.height) return 0;
+  return lvl.tiles[tx][ty];
+}
+
+function setTile(px, py, v) {
+  const lvl = currentLevel();
+  const tx = Math.floor(px / tileSize);
+  const ty = Math.floor(py / tileSize);
+  if (tx < 0 || tx >= lvl.width || ty < 0 || ty >= lvl.height) return;
+  lvl.tiles[tx][ty] = v;
+}
+
+function resetPlayer() {
+  player.x = 100;
+  player.y = 0;
+  player.vx = 0;
+  player.vy = 0;
+  player.onGround = false;
+  cameraX = 0;
+}
+
+function startLevel(index) {
+  currentLevelIndex = index;
+  resetPlayer();
+  gameState = "game";
+  startTime = performance.now();
+  elapsedTime = 0;
+  centerMsg.style.display = "none";
+}
+
+document.querySelectorAll("#menu .menuBtn[data-level]").forEach(btn => {
+  btn.addEventListener("touchstart", e => {
+    e.preventDefault();
+    const lvl = parseInt(btn.getAttribute("data-level"), 10);
+    menu.style.display = "none";
+    startLevel(lvl);
+    requestAnimationFrame(loop);
+  });
+});
+
+document.getElementById("openShopFromMenu").addEventListener("touchstart", e => {
+  e.preventDefault();
+  openShop();
+});
+
+shopBtn.addEventListener("touchstart", e => {
+  e.preventDefault();
+  if (gameState === "game") {
+    openShop();
+  }
+});
+
+function openShop() {
+  gameState = "shop";
+  shop.style.display = "flex";
+  menu.style.display = "none";
+  centerMsg.style.display = "none";
+  shopCoinsEl.textContent = coins;
+}
+
+document.getElementById("closeShop").addEventListener("touchstart", e => {
+  e.preventDefault();
+  shop.style.display = "none";
+  if (startTime) {
+    gameState = "game";
+    requestAnimationFrame(loop);
+  } else {
+    gameState = "menu";
+    menu.style.display = "flex";
+  }
+});
+
+document.querySelectorAll("#shop .menuBtn[data-skin]").forEach(btn => {
+  btn.addEventListener("touchstart", e => {
+    e.preventDefault();
+    const s = btn.getAttribute("data-skin");
+    if (s === "default") {
+      skin = "default";
+    } else if (s === "red" && coins >= 10) {
+      coins -= 10;
+      skin = "red";
+    } else if (s === "blue" && coins >= 10) {
+      coins -= 10;
+      skin = "blue";
+    } else if (s === "gold" && coins >= 25) {
+      coins -= 25;
+      skin = "gold";
+    }
+    coinsEl.textContent = coins;
+    shopCoinsEl.textContent = coins;
+  });
+});
+
+function loseLife() {
+  lives--;
+  livesEl.textContent = lives;
+  if (lives <= 0) {
+    gameState = "menu";
+    menu.style.display = "flex";
+    centerMsg.textContent = "Game Over! Tap a level to try again.";
+    centerMsg.style.display = "block";
+    lives = 3;
+    coins = 0;
+    coinsEl.textContent = coins;
+    livesEl.textContent = lives;
+    startTime = 0;
+  } else {
+    resetPlayer();
+  }
+}
+
+function winLevel() {
+  sndWin.play().catch(()=>{});
+  gameState = "menu";
+  menu.style.display = "flex";
+  centerMsg.textContent = `Level complete! Time: ${elapsedTime.toFixed(1)}s`;
+  centerMsg.style.display = "block";
+  startTime = 0;
+}
+
+function update(dt) {
+  if (gameState !== "game") return;
+
+  // Timer
+  elapsedTime = (performance.now() - startTime) / 1000;
+  timeEl.textContent = elapsedTime.toFixed(1);
+
+  // Movement
+  player.vx = 0;
+  if (keys.left) player.vx = -moveSpeed;
+  if (keys.right) player.vx = moveSpeed;
+
+  // Jump
+  if (keys.jump && player.onGround) {
+    player.vy = -jumpSpeed;
+    player.onGround = false;
+    sndJump.play().catch(()=>{});
+  }
+
+  // Gravity
+  player.vy += gravity * dt;
+
+  // Horizontal
+  player.x += player.vx * dt;
+  resolveCollisions(true);
+
+  // Vertical
+  player.y += player.vy * dt;
+  player.onGround = false;
+  resolveCollisions(false);
+
+  // Moving platforms
+  updatePlatforms(dt);
+
+  // Enemies
+  updateEnemies(dt);
+
+  // Camera
+  const lvl = currentLevel();
+  cameraX = player.x - canvas.width / 2;
+  if (cameraX < 0) cameraX = 0;
+  const maxCam = lvl.width * tileSize - canvas.width;
+  if (cameraX > maxCam) cameraX = maxCam;
+
+  // Fall off
+  if (player.y > canvas.height + 200) {
+    loseLife();
+  }
+}
+
+function resolveCollisions(horizontal) {
+  const lvl = currentLevel();
+  const w = player.w;
+  const h = player.h;
+
+  const left = player.x - w/2;
+  const right = player.x + w/2;
+  const top = player.y - h;
+  const bottom = player.y;
+
+  const startX = Math.floor(left / tileSize) - 1;
+  const endX = Math.floor(right / tileSize) + 1;
+  const startY = Math.floor(top / tileSize) - 1;
+  const endY = Math.floor(bottom / tileSize) + 1;
+
+  for (let tx = startX; tx <= endX; tx++) {
+    for (let ty = startY; ty <= endY; ty++) {
+      if (tx < 0 || tx >= lvl.width || ty < 0 || ty >= lvl.height) continue;
+      const t = lvl.tiles[tx][ty];
+      if (t === 0) continue;
+
+      const tileLeft = tx * tileSize;
+      const tileRight = tileLeft + tileSize;
+      const tileTop = ty * tileSize;
+      const tileBottom = tileTop + tileSize;
+
+      if (right > tileLeft && left < tileRight && bottom > tileTop && top < tileBottom) {
+        if (t === 2) {
+          // Coin
+          lvl.tiles[tx][ty] = 0;
+          coins++;
+          coinsEl.textContent = coins;
+          sndCoin.play().catch(()=>{});
+          continue;
+        }
+        if (t === 3) {
+          // Flag
+          winLevel();
+          return;
+        }
+
+        // Solid
+        if (horizontal) {
+          if (player.vx > 0) player.x = tileLeft - w/2;
+          else if (player.vx < 0) player.x = tileRight + w/2;
+          player.vx = 0;
+        } else {
+          if (player.vy > 0) {
+            player.y = tileTop;
+            player.vy = 0;
+            player.onGround = true;
+          } else if (player.vy < 0) {
+            player.y = tileBottom + h;
+            player.vy = 0;
+          }
+        }
+      }
+    }
+  }
+
+  // Platforms (treated as solid)
+  const plats = lvl.platforms;
+  for (const p of plats) {
+    const tileLeft = p.x;
+    const tileRight = p.x + p.w;
+    const tileTop = p.y;
+    const tileBottom = p.y + p.h;
+
+    if (right > tileLeft && left < tileRight && bottom > tileTop && top < tileBottom) {
+      if (!horizontal) {
+        if (player.vy > 0 && bottom - player.vy * 0.016 <= tileTop) {
+          player.y = tileTop;
+          player.vy = 0;
+          player.onGround = true;
+        }
+      }
+    }
+  }
+}
+
+function updatePlatforms(dt) {
+  const lvl = currentLevel();
+  for (const p of lvl.platforms) {
+    p.x += p.dir * 80 * dt;
+    if (p.x < p.minX) {
+      p.x = p.minX;
+      p.dir *= -1;
+    } else if (p.x + p.w > p.maxX) {
+      p.x = p.maxX - p.w;
+      p.dir *= -1;
+    }
+  }
+}
+
+function updateEnemies(dt) {
+  const lvl = currentLevel();
+  for (const e of lvl.enemies) {
+    e.x += e.dir * 80 * dt;
+    if (e.x < e.minX) {
+      e.x = e.minX;
+      e.dir *= -1;
+    } else if (e.x > e.maxX) {
+      e.x = e.maxX;
+      e.dir *= -1;
+    }
+
+    const ex = e.x;
+    const ey = e.y;
+    const ew = 40;
+    const eh = 40;
+
+    const left = player.x - player.w/2;
+    const right = player.x + player.w/2;
+    const top = player.y - player.h;
+    const bottom = player.y;
+
+    const tileLeft = ex - ew/2;
+    const tileRight = ex + ew/2;
+    const tileTop = ey - eh;
+    const tileBottom = ey;
+
+    if (right > tileLeft && left < tileRight && bottom > tileTop && top < tileBottom) {
+      // Stomp
+      if (player.vy > 0 && top < tileTop && bottom > tileTop) {
+        e.dead = true;
+        player.vy = -jumpSpeed * 0.7;
+        sndStomp.play().catch(()=>{});
+      } else {
+        loseLife();
+        return;
+      }
+    }
+  }
+  lvl.enemies = lvl.enemies.filter(e => !e.dead);
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  const lvl = currentLevel();
+
+  // Sky
+  ctx.fillStyle = "#6ec5ff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Tiles
+  const startX = Math.floor(cameraX / tileSize);
+  const endX = startX + Math.ceil(canvas.width / tileSize) + 2;
+
+  for (let x = startX; x < endX; x++) {
+    if (x < 0 || x >= lvl.width) continue;
+    for (let y = 0; y < lvl.height; y++) {
+      const t = lvl.tiles[x][y];
+      if (!t) continue;
+
+      const sx = x * tileSize - cameraX;
+      const sy = y * tileSize;
+
+      if (t === 1) {
+        ctx.fillStyle = "#8b5a2b";
+        ctx.fillRect(sx, sy, tileSize, tileSize);
+        ctx.fillStyle = "#cfa15a";
+        ctx.fillRect(sx, sy, tileSize, 10);
+      } else if (t === 2) {
+        ctx.fillStyle = "#ffd93b";
+        ctx.beginPath();
+        ctx.arc(sx + 25, sy + 25, 12, 0, Math.PI*2);
+        ctx.fill();
+        ctx.strokeStyle = "#f4b400";
+        ctx.stroke();
+      } else if (t === 3) {
+        ctx.fillStyle = "#8b5a2b";
+        ctx.fillRect(sx + tileSize/2 - 3, sy - 60, 6, 60);
+        ctx.fillStyle = "#4caf50";
+        ctx.beginPath();
+        ctx.moveTo(sx + tileSize/2 + 3, sy - 60);
+        ctx.lineTo(sx + tileSize/2 + 3 + 30, sy - 45);
+        ctx.lineTo(sx + tileSize/2 + 3, sy - 30);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+  }
+
+  // Platforms
+  for (const p of lvl.platforms) {
+    const sx = p.x - cameraX;
+    const sy = p.y;
+    ctx.fillStyle = "#607d8b";
+    ctx.fillRect(sx, sy, p.w, p.h);
+  }
+
+  // Enemies
+  for (const e of lvl.enemies) {
+    const sx = e.x - cameraX;
+    const sy = e.y;
+    ctx.fillStyle = "#e53935";
+    ctx.fillRect(sx - 20, sy - 40, 40, 40);
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(sx - 12, sy - 30, 8, 8);
+    ctx.fillRect(sx + 4, sy - 30, 8, 8);
+    ctx.fillStyle = "#000";
+    ctx.fillRect(sx - 10, sy - 28, 4, 4);
+    ctx.fillRect(sx + 6, sy - 28, 4, 4);
+  }
+
+  // Player
+  const px = player.x - cameraX;
+  const py = player.y;
+
+  let suitColor = "#ffcc80";
+  if (skin === "red") suitColor = "#f44336";
+  else if (skin === "blue") suitColor = "#2196f3";
+  else if (skin === "gold") suitColor = "#ffeb3b";
+
+  ctx.fillStyle = suitColor;
+  ctx.fillRect(px - player.w/2, py - player.h, player.w, player.h);
+
+  ctx.fillStyle = "#ffebc1";
+  ctx.fillRect(px - 14, py - player.h - 18, 28, 18);
+
+  ctx.fillStyle = "#e53935";
+  ctx.fillRect(px - 16, py - player.h - 24, 32, 10);
+
+  ctx.fillStyle = "#000";
+  ctx.fillRect(px - 6, py - player.h - 14, 4, 4);
+  ctx.fillRect(px + 2, py - player.h - 14, 4, 4);
+}
+
+let lastTime = 0;
+function loop(ts) {
+  if (gameState !== "game") return;
+  const dt = (ts - lastTime) / 1000;
+  lastTime = ts;
+
+  update(dt);
+  draw();
+
+  requestAnimationFrame(loop);
+}
+
+// Initial static draw
+draw();
+</script>
+</body>
+</html>
