@@ -1,368 +1,318 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>Mini Mech Arena</title>
-  <style>
-    html, body {
-      margin: 0;
-      padding: 0;
-      overflow: hidden;
-      background: #000;
-      font-family: sans-serif;
-      color: white;
-    }
-    #ui {
-      position: fixed;
-      top: 10px;
-      left: 10px;
-      z-index: 10;
-      font-size: 16px;
-      background: rgba(0,0,0,0.4);
-      padding: 8px 12px;
-      border-radius: 6px;
-    }
-    #centerMsg {
-      position: fixed;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      color: white;
-      font-size: 20px;
-      text-align: center;
-      z-index: 20;
-      background: rgba(0,0,0,0.6);
-      padding: 12px 18px;
-      border-radius: 8px;
-    }
-    #crosshair {
-      position: fixed;
-      top: 50%;
-      left: 50%;
-      width: 10px;
-      height: 10px;
-      margin-left: -5px;
-      margin-top: -5px;
-      border-radius: 50%;
-      border: 2px solid white;
-      z-index: 15;
-      pointer-events: none;
-    }
-  </style>
+<meta charset="UTF-8" />
+<title>Mini Mech Arena – Mobile</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background: #000;
+    touch-action: none;
+    font-family: sans-serif;
+    color: white;
+  }
+  #ui {
+    position: fixed;
+    top: 10px;
+    left: 10px;
+    z-index: 10;
+    background: rgba(0,0,0,0.4);
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 16px;
+  }
+  #centerMsg {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(0,0,0,0.6);
+    padding: 12px 18px;
+    border-radius: 8px;
+    font-size: 20px;
+    z-index: 20;
+  }
+  /* Virtual joystick */
+  #joystick {
+    position: fixed;
+    bottom: 60px;
+    left: 60px;
+    width: 120px;
+    height: 120px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.1);
+    border: 2px solid rgba(255,255,255,0.3);
+    z-index: 20;
+    touch-action: none;
+  }
+  #stick {
+    position: absolute;
+    width: 50px;
+    height: 50px;
+    left: 35px;
+    top: 35px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.4);
+    z-index: 21;
+    touch-action: none;
+  }
+</style>
 </head>
 <body>
+
 <div id="ui">
-  <div>Mini Mech Arena</div>
+  <div>Mini Mech Arena – Mobile</div>
   <div>Time: <span id="time">5:00</span></div>
   <div>Score: <span id="score">0</span></div>
-  <div style="margin-top:4px;font-size:13px;">
-    Click to lock mouse<br/>
-    WASD to move, Space/Click to shoot
-  </div>
 </div>
-<div id="centerMsg">Click to start</div>
-<div id="crosshair"></div>
+
+<div id="centerMsg">Tap to start</div>
+
+<!-- Virtual joystick -->
+<div id="joystick"><div id="stick"></div></div>
 
 <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
-<script src="https://unpkg.com/three@0.160.0/examples/js/controls/PointerLockControls.js"></script>
+
 <script>
-  // Basic setup
-  let scene, camera, renderer, controls;
-  let keys = {};
-  let bullets = [];
-  let enemies = [];
-  let lastTime = performance.now();
-  let score = 0;
-  let gameTime = 5 * 60 * 1000; // 5 minutes in ms
-  let startTime = null;
-  let gameOver = false;
+/* ------------------------------
+   BASIC THREE.JS SETUP
+--------------------------------*/
+let scene, camera, renderer;
+let enemies = [];
+let bullets = [];
+let score = 0;
+let startTime = null;
+let gameOver = false;
+let lastTime = performance.now();
 
-  const timeEl = document.getElementById('time');
-  const scoreEl = document.getElementById('score');
-  const centerMsg = document.getElementById('centerMsg');
+const timeEl = document.getElementById("time");
+const scoreEl = document.getElementById("score");
+const centerMsg = document.getElementById("centerMsg");
 
-  init();
-  animate();
+/* ------------------------------
+   INITIALIZE SCENE
+--------------------------------*/
+init();
+animate();
 
-  function init() {
-    scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x101020);
+function init() {
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x101020);
 
-    camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-    camera.position.set(0, 2, 5);
+  camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+  camera.position.set(0, 2, 5);
 
-    renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    document.body.appendChild(renderer.domElement);
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.body.appendChild(renderer.domElement);
 
-    // Lights
-    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1.0);
-    hemiLight.position.set(0, 50, 0);
-    scene.add(hemiLight);
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 1);
+  scene.add(hemi);
 
-    const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
-    dirLight.position.set(5, 10, 2);
-    scene.add(dirLight);
+  const floor = new THREE.Mesh(
+    new THREE.PlaneGeometry(60, 60),
+    new THREE.MeshStandardMaterial({ color: 0x202040 })
+  );
+  floor.rotation.x = -Math.PI / 2;
+  scene.add(floor);
 
-    // Floor (arena)
-    const floorGeo = new THREE.PlaneGeometry(60, 60);
-    const floorMat = new THREE.MeshStandardMaterial({ color: 0x202040 });
-    const floor = new THREE.Mesh(floorGeo, floorMat);
-    floor.rotation.x = -Math.PI / 2;
-    floor.receiveShadow = true;
-    scene.add(floor);
+  spawnEnemies(8);
 
-    // Simple walls
-    const wallMat = new THREE.MeshStandardMaterial({ color: 0x303060 });
-    const wallGeo = new THREE.BoxGeometry(60, 4, 1);
-    const wall1 = new THREE.Mesh(wallGeo, wallMat);
-    wall1.position.set(0, 2, -30);
-    scene.add(wall1);
-    const wall2 = wall1.clone();
-    wall2.position.set(0, 2, 30);
-    scene.add(wall2);
-    const wallGeoSide = new THREE.BoxGeometry(1, 4, 60);
-    const wall3 = new THREE.Mesh(wallGeoSide, wallMat);
-    wall3.position.set(-30, 2, 0);
-    scene.add(wall3);
-    const wall4 = wall3.clone();
-    wall4.position.set(30, 2, 0);
-    scene.add(wall4);
-
-    // Player "mech" body (just for reference)
-    const mechGeo = new THREE.BoxGeometry(1, 2, 1);
-    const mechMat = new THREE.MeshStandardMaterial({ color: 0x00ffcc });
-    const mech = new THREE.Mesh(mechGeo, mechMat);
-    mech.position.set(0, 1, 0);
-    scene.add(mech);
-    camera.userData.mech = mech;
-
-    // Enemies
-    spawnEnemies(8);
-
-    // Controls
-    controls = new THREE.PointerLockControls(camera, document.body);
-    document.body.addEventListener('click', () => {
-      if (!controls.isLocked && !gameOver) {
-        controls.lock();
-        if (!startTime) {
-          startTime = performance.now();
-          centerMsg.style.display = 'none';
-        }
-      }
-    });
-
-    controls.addEventListener('lock', () => {
-      centerMsg.style.display = 'none';
-    });
-
-    controls.addEventListener('unlock', () => {
-      if (!gameOver) {
-        centerMsg.textContent = 'Click to resume';
-        centerMsg.style.display = 'block';
-      }
-    });
-
-    // Input
-    document.addEventListener('keydown', (e) => {
-      keys[e.code] = true;
-      if (e.code === 'Space') shoot();
-    });
-    document.addEventListener('keyup', (e) => {
-      keys[e.code] = false;
-    });
-    document.addEventListener('mousedown', (e) => {
-      if (e.button === 0) shoot();
-    });
-
-    window.addEventListener('resize', onWindowResize);
-  }
-
-  function spawnEnemies(count) {
-    const colors = [0xff5555, 0xffaa00, 0x55ff55, 0x55aaff, 0xaa55ff];
-    for (let i = 0; i < count; i++) {
-      const geo = new THREE.BoxGeometry(1.2, 2, 1.2);
-      const mat = new THREE.MeshStandardMaterial({ color: colors[i % colors.length] });
-      const enemy = new THREE.Mesh(geo, mat);
-      enemy.position.set(
-        (Math.random() - 0.5) * 40,
-        1,
-        (Math.random() - 0.5) * 40
-      );
-      enemy.userData.hp = 3;
-      enemy.userData.speed = 2 + Math.random() * 1.5;
-      scene.add(enemy);
-      enemies.push(enemy);
-    }
-  }
-
-  function shoot() {
-    if (!startTime || gameOver) return;
-
-    const bulletGeo = new THREE.SphereGeometry(0.15, 8, 8);
-    const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
-    const bullet = new THREE.Mesh(bulletGeo, bulletMat);
-
-    const dir = new THREE.Vector3();
-    camera.getWorldDirection(dir);
-
-    bullet.position.copy(camera.position);
-    bullet.position.y -= 0.1;
-    bullet.userData.velocity = dir.clone().multiplyScalar(40);
-    bullet.userData.life = 1.5; // seconds
-
-    scene.add(bullet);
-    bullets.push(bullet);
-  }
-
-  function onWindowResize() {
+  window.addEventListener("resize", () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  setupTouchControls();
+}
+
+/* ------------------------------
+   ENEMY SPAWNING
+--------------------------------*/
+function spawnEnemies(n) {
+  for (let i = 0; i < n; i++) {
+    const e = new THREE.Mesh(
+      new THREE.BoxGeometry(1.2, 2, 1.2),
+      new THREE.MeshStandardMaterial({ color: 0xff5555 })
+    );
+    e.position.set((Math.random() - 0.5) * 40, 1, (Math.random() - 0.5) * 40);
+    e.userData.hp = 3;
+    e.userData.speed = 2 + Math.random();
+    scene.add(e);
+    enemies.push(e);
+  }
+}
+
+/* ------------------------------
+   SHOOTING
+--------------------------------*/
+function shoot() {
+  if (!startTime || gameOver) return;
+
+  const bullet = new THREE.Mesh(
+    new THREE.SphereGeometry(0.15, 8, 8),
+    new THREE.MeshBasicMaterial({ color: 0xffff00 })
+  );
+
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+
+  bullet.position.copy(camera.position);
+  bullet.userData.velocity = dir.multiplyScalar(40);
+  bullet.userData.life = 1.5;
+
+  scene.add(bullet);
+  bullets.push(bullet);
+}
+
+/* ------------------------------
+   TOUCH CONTROLS
+--------------------------------*/
+let joystick = document.getElementById("joystick");
+let stick = document.getElementById("stick");
+let moveX = 0, moveY = 0;
+let isTouchingRight = false;
+let lastTouchX = 0, lastTouchY = 0;
+
+function setupTouchControls() {
+  centerMsg.addEventListener("touchstart", () => {
+    centerMsg.style.display = "none";
+    startTime = performance.now();
+  });
+
+  /* Joystick movement */
+  joystick.addEventListener("touchstart", (e) => {
+    e.preventDefault();
+  });
+
+  joystick.addEventListener("touchmove", (e) => {
+    e.preventDefault();
+    const rect = joystick.getBoundingClientRect();
+    const touch = e.touches[0];
+    const x = touch.clientX - (rect.left + rect.width / 2);
+    const y = touch.clientY - (rect.top + rect.height / 2);
+
+    const dist = Math.min(40, Math.sqrt(x*x + y*y));
+    const angle = Math.atan2(y, x);
+
+    stick.style.left = 60 + Math.cos(angle) * dist - 25 + "px";
+    stick.style.top = 60 + Math.sin(angle) * dist - 25 + "px";
+
+    moveX = Math.cos(angle) * (dist / 40);
+    moveY = Math.sin(angle) * (dist / 40);
+  });
+
+  joystick.addEventListener("touchend", () => {
+    stick.style.left = "35px";
+    stick.style.top = "35px";
+    moveX = moveY = 0;
+  });
+
+  /* Right side: look + shoot */
+  document.body.addEventListener("touchstart", (e) => {
+    if (e.touches[0].clientX > window.innerWidth * 0.5) {
+      isTouchingRight = true;
+      lastTouchX = e.touches[0].clientX;
+      lastTouchY = e.touches[0].clientY;
+      shoot();
+    }
+  });
+
+  document.body.addEventListener("touchmove", (e) => {
+    if (!isTouchingRight) return;
+    const t = e.touches[0];
+    const dx = t.clientX - lastTouchX;
+    const dy = t.clientY - lastTouchY;
+
+    camera.rotation.y -= dx * 0.005;
+    camera.rotation.x -= dy * 0.005;
+    camera.rotation.x = Math.max(-1.2, Math.min(1.2, camera.rotation.x));
+
+    lastTouchX = t.clientX;
+    lastTouchY = t.clientY;
+  });
+
+  document.body.addEventListener("touchend", () => {
+    isTouchingRight = false;
+  });
+}
+
+/* ------------------------------
+   GAME LOOP
+--------------------------------*/
+function animate() {
+  requestAnimationFrame(animate);
+
+  const now = performance.now();
+  const delta = (now - lastTime) / 1000;
+  lastTime = now;
+
+  update(delta);
+  renderer.render(scene, camera);
+}
+
+function update(delta) {
+  if (gameOver || !startTime) return;
+
+  /* Timer */
+  const elapsed = performance.now() - startTime;
+  const remaining = Math.max(0, 5 * 60 * 1000 - elapsed);
+  const sec = Math.floor(remaining / 1000);
+  timeEl.textContent = `${Math.floor(sec/60)}:${String(sec%60).padStart(2,"0")}`;
+
+  if (remaining <= 0) {
+    gameOver = true;
+    centerMsg.style.display = "block";
+    centerMsg.textContent = `Time's up! Score: ${score}`;
   }
 
-  function update(delta) {
-    if (gameOver) return;
+  /* Movement */
+  const speed = 10 * delta;
+  const forward = new THREE.Vector3(Math.sin(camera.rotation.y), 0, Math.cos(camera.rotation.y));
+  const right = new THREE.Vector3(forward.z, 0, -forward.x);
 
-    // Timer
-    if (startTime) {
-      const elapsed = performance.now() - startTime;
-      const remaining = Math.max(0, gameTime - elapsed);
-      const sec = Math.floor(remaining / 1000);
-      const m = Math.floor(sec / 60);
-      const s = sec % 60;
-      timeEl.textContent = `${m}:${s.toString().padStart(2, '0')}`;
-      if (remaining <= 0) {
-        endGame();
-      }
+  camera.position.addScaledVector(forward, -moveY * speed);
+  camera.position.addScaledVector(right, moveX * speed);
+
+  /* Bullets */
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const b = bullets[i];
+    b.position.addScaledVector(b.userData.velocity, delta);
+    b.userData.life -= delta;
+    if (b.userData.life <= 0) {
+      scene.remove(b);
+      bullets.splice(i, 1);
     }
+  }
 
-    // Player movement
-    const speed = 10;
-    const mech = camera.userData.mech;
-    if (controls.isLocked) {
-      const forward = new THREE.Vector3();
-      camera.getWorldDirection(forward);
-      forward.y = 0;
-      forward.normalize();
+  /* Enemies */
+  enemies.forEach((e, idx) => {
+    const dir = camera.position.clone().sub(e.position);
+    dir.y = 0;
+    dir.normalize();
+    e.position.addScaledVector(dir, e.userData.speed * delta);
 
-      const right = new THREE.Vector3();
-      right.crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize().multiplyScalar(-1);
-
-      let move = new THREE.Vector3();
-      if (keys['KeyW']) move.add(forward);
-      if (keys['KeyS']) move.sub(forward);
-      if (keys['KeyA']) move.sub(right);
-      if (keys['KeyD']) move.add(right);
-
-      if (move.lengthSq() > 0) {
-        move.normalize().multiplyScalar(speed * delta);
-        camera.position.add(move);
-      }
-
-      // Keep player inside arena
-      camera.position.x = THREE.MathUtils.clamp(camera.position.x, -28, 28);
-      camera.position.z = THREE.MathUtils.clamp(camera.position.z, -28, 28);
-
-      // Sync mech body
-      mech.position.set(camera.position.x, 1, camera.position.z);
-    }
-
-    // Update bullets
-    for (let i = bullets.length - 1; i >= 0; i--) {
-      const b = bullets[i];
-      b.position.addScaledVector(b.userData.velocity, delta);
-      b.userData.life -= delta;
-      if (b.userData.life <= 0) {
+    bullets.forEach((b, bi) => {
+      if (b.position.distanceTo(e.position) < 1.2) {
+        e.userData.hp--;
         scene.remove(b);
-        bullets.splice(i, 1);
-        continue;
-      }
+        bullets.splice(bi, 1);
 
-      // Bullet-enemy collision
-      for (let j = enemies.length - 1; j >= 0; j--) {
-        const e = enemies[j];
-        if (!e) continue;
-        const dist = b.position.distanceTo(e.position);
-        if (dist < 1.2) {
-          e.userData.hp -= 1;
-          scene.remove(b);
-          bullets.splice(i, 1);
-
-          // Flash color
-          e.material.emissive = new THREE.Color(0xffff00);
-          setTimeout(() => {
-            if (e.material) e.material.emissive = new THREE.Color(0x000000);
-          }, 100);
-
-          if (e.userData.hp <= 0) {
-            score += 10;
-            scoreEl.textContent = score;
-            // Small explosion effect
-            spawnExplosion(e.position);
-            scene.remove(e);
-            enemies.splice(j, 1);
-            // Respawn a new enemy to keep action going
-            spawnEnemies(1);
-          }
-          break;
+        if (e.userData.hp <= 0) {
+          score += 10;
+          scoreEl.textContent = score;
+          scene.remove(e);
+          enemies.splice(idx, 1);
+          spawnEnemies(1);
         }
       }
-    }
-
-    // Enemies move toward player
-    const playerPos = camera.position.clone();
-    playerPos.y = 1;
-    enemies.forEach(e => {
-      const dir = playerPos.clone().sub(e.position);
-      dir.y = 0;
-      const dist = dir.length();
-      if (dist > 0.1) {
-        dir.normalize();
-        e.position.addScaledVector(dir, e.userData.speed * delta);
-      }
     });
-  }
-
-  function spawnExplosion(pos) {
-    const geo = new THREE.SphereGeometry(0.1, 6, 6);
-    const mat = new THREE.MeshBasicMaterial({ color: 0xffdd55 });
-    const puff = new THREE.Mesh(geo, mat);
-    puff.position.copy(pos);
-    scene.add(puff);
-    const start = performance.now();
-    const duration = 300;
-    function puffAnim() {
-      const t = performance.now() - start;
-      const k = t / duration;
-      if (k >= 1) {
-        scene.remove(puff);
-        return;
-      }
-      puff.scale.setScalar(1 + 4 * k);
-      puff.material.opacity = 1 - k;
-      puff.material.transparent = true;
-      requestAnimationFrame(puffAnim);
-    }
-    puffAnim();
-  }
-
-  function endGame() {
-    gameOver = true;
-    centerMsg.style.display = 'block';
-    centerMsg.innerHTML = `Time's up!<br/>Final Score: ${score}<br/><br/>Reload the page to play again.`;
-    controls.unlock();
-  }
-
-  function animate() {
-    requestAnimationFrame(animate);
-    const now = performance.now();
-    const delta = (now - lastTime) / 1000;
-    lastTime = now;
-
-    update(delta);
-    renderer.render(scene, camera);
-  }
+  });
+}
 </script>
 </body>
 </html>
