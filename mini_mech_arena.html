@@ -13,6 +13,8 @@
     touch-action: none;
     font-family: sans-serif;
     color: white;
+    width: 100%;
+    height: 100%;
   }
   #ui {
     position: fixed;
@@ -23,6 +25,15 @@
     padding: 8px 12px;
     border-radius: 6px;
     font-size: 16px;
+    line-height: 1.5;
+  }
+  #hpBarWrap {
+    width: 160px; height: 12px; background: rgba(255,255,255,0.15);
+    border-radius: 6px; overflow: hidden; margin-top: 4px;
+  }
+  #hpBarFill {
+    height: 100%; width: 100%; background: linear-gradient(90deg,#ff5d73,#ffd166);
+    transition: width 0.15s ease;
   }
   #centerMsg {
     position: fixed;
@@ -34,7 +45,23 @@
     border-radius: 8px;
     font-size: 20px;
     z-index: 20;
+    text-align: center;
   }
+  #levelUpPanel {
+    position: fixed; inset: 0; z-index: 30; display: none;
+    align-items: center; justify-content: center; flex-direction: column; gap: 14px;
+    background: rgba(5,6,26,0.82);
+  }
+  #levelUpPanel.active { display: flex; }
+  #levelUpPanel h2 { margin: 0; font-size: 22px; color: #ffd166; }
+  #levelUpCards { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; max-width: 90vw; }
+  .upCard {
+    width: 150px; padding: 14px 10px; border-radius: 12px; cursor: pointer;
+    background: linear-gradient(160deg, rgba(60,50,140,0.9), rgba(20,16,60,0.95));
+    border: 2px solid #6a5fd6; text-align: center; touch-action: manipulation;
+  }
+  .upCard b { display: block; color: #7cf9c0; font-size: 14px; margin-bottom: 6px; }
+  .upCard span { font-size: 11.5px; color: #dcdfff; }
   /* Virtual joystick */
   #joystick {
     position: fixed;
@@ -59,6 +86,10 @@
     z-index: 21;
     touch-action: none;
   }
+  #desktopHint {
+    position: fixed; bottom: 10px; left: 10px; z-index: 10; font-size: 12px;
+    background: rgba(0,0,0,0.4); padding: 6px 10px; border-radius: 6px; display: none;
+  }
 </style>
 </head>
 <body>
@@ -66,41 +97,94 @@
 <div id="ui">
   <div>Mini Mech Arena – Mobile</div>
   <div>Time: <span id="time">5:00</span></div>
-  <div>Score: <span id="score">0</span></div>
+  <div>Score: <span id="score">0</span> &nbsp; Wave: <span id="wave">1</span></div>
+  <div id="hpBarWrap"><div id="hpBarFill"></div></div>
 </div>
 
 <div id="centerMsg">Tap to start</div>
 
+<div id="levelUpPanel">
+  <h2>WAVE CLEARED — CHOOSE AN UPGRADE</h2>
+  <div id="levelUpCards"></div>
+</div>
+
 <!-- Virtual joystick -->
 <div id="joystick"><div id="stick"></div></div>
+<div id="desktopHint">WASD move · mouse look (click to lock) · click/space to shoot</div>
 
 <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
 
 <script>
+"use strict";
 /* ------------------------------
    BASIC THREE.JS SETUP
 --------------------------------*/
 let scene, camera, renderer;
 let enemies = [];
 let bullets = [];
+let obstacles = [];
 let score = 0;
 let startTime = null;
 let gameOver = false;
+let paused = false;
 let lastTime = performance.now();
 
 const timeEl = document.getElementById("time");
 const scoreEl = document.getElementById("score");
+const waveEl = document.getElementById("wave");
+const hpBarFill = document.getElementById("hpBarFill");
 const centerMsg = document.getElementById("centerMsg");
+const levelUpPanel = document.getElementById("levelUpPanel");
+const levelUpCards = document.getElementById("levelUpCards");
+const desktopHint = document.getElementById("desktopHint");
+
+const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+const rand = (a, b) => a + Math.random() * (b - a);
+const randInt = (a, b) => Math.floor(rand(a, b + 1));
+
+/* ------------------------------
+   PLAYER / WAVE STATE
+--------------------------------*/
+const player = {
+  maxHp: 100, hp: 100, invuln: 0,
+  speedMult: 1, fireInterval: 0.35, pierce: 0,
+};
+let wave = 1;
+let kills = 0;
+let killsToNextWave = 6;
+let lastShotTime = -999;
+
+/* Arena scales with the player's actual screen so bigger monitors get a
+   bigger battlefield instead of the same fixed 60x60 floor. */
+function computeArenaSize() {
+  const baseline = 1280 * 800;
+  const scale = clamp((window.innerWidth * window.innerHeight) / baseline, 1, 4.2);
+  return clamp(Math.round((70 * Math.sqrt(scale)) / 10) * 10, 70, 160);
+}
+let ARENA_SIZE = computeArenaSize();
+
+const ENEMY_TYPES = {
+  grunt:  { hp: 3, speed: 2.2, radius: 1.0, color: 0xff5555, dmg: 8,  score: 10, w: 1.2, h: 2.0, d: 1.2 },
+  runner: { hp: 2, speed: 3.6, radius: 0.7, color: 0x5ad1ff, dmg: 5,  score: 8,  w: 0.8, h: 1.5, d: 0.8 },
+  tank:   { hp: 8, speed: 1.3, radius: 1.5, color: 0x8a5cff, dmg: 16, score: 24, w: 1.9, h: 2.6, d: 1.9 },
+};
+
+const UPGRADE_POOL = [
+  { id: "fireRate", name: "Rapid Fire", desc: "-18% shot cooldown", apply: () => { player.fireInterval *= 0.82; } },
+  { id: "speed", name: "Servo Boost", desc: "+16% move speed", apply: () => { player.speedMult *= 1.16; } },
+  { id: "maxhp", name: "Armor Plating", desc: "+25 max HP & full repair", apply: () => { player.maxHp += 25; player.hp = player.maxHp; } },
+  { id: "pierce", name: "Rail Rounds", desc: "Shots pierce +1 enemy", apply: () => { player.pierce += 1; } },
+];
 
 /* ------------------------------
    INITIALIZE SCENE
+   (booted at the bottom of the script, after joystick/stick etc. are
+   declared — calling this earlier throws a temporal-dead-zone error)
 --------------------------------*/
-init();
-animate();
-
 function init() {
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x101020);
+  scene.fog = new THREE.Fog(0x101020, ARENA_SIZE * 0.5, ARENA_SIZE * 1.15);
 
   camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
   camera.position.set(0, 2, 5);
@@ -113,13 +197,15 @@ function init() {
   scene.add(hemi);
 
   const floor = new THREE.Mesh(
-    new THREE.PlaneGeometry(60, 60),
+    new THREE.PlaneGeometry(ARENA_SIZE, ARENA_SIZE),
     new THREE.MeshStandardMaterial({ color: 0x202040 })
   );
   floor.rotation.x = -Math.PI / 2;
   scene.add(floor);
 
+  spawnObstacles();
   spawnEnemies(8);
+  updateHUD();
 
   window.addEventListener("resize", () => {
     camera.aspect = window.innerWidth / window.innerHeight;
@@ -128,20 +214,87 @@ function init() {
   });
 
   setupTouchControls();
+  setupDesktopControls();
+}
+
+/* ------------------------------
+   OBSTACLES (crates / pillars block movement+bullets; hazards damage over time)
+--------------------------------*/
+function spawnObstacles() {
+  const area = ARENA_SIZE * ARENA_SIZE;
+  const baseArea = 70 * 70;
+  const n = clamp(Math.round(randInt(6, 9) * (area / baseArea)), 6, 26);
+  const margin = ARENA_SIZE / 2 - 6;
+  for (let i = 0; i < n; i++) {
+    const x = rand(-margin, margin);
+    const z = rand(-margin, margin);
+    if (Math.hypot(x, z) < 6) continue; // keep the spawn area clear
+    const roll = Math.random();
+    if (roll < 0.5) {
+      const size = rand(1.6, 3.2);
+      const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(size, size * 1.1, size),
+        new THREE.MeshStandardMaterial({ color: 0x4a4570 })
+      );
+      mesh.position.set(x, size * 0.55, z);
+      scene.add(mesh);
+      obstacles.push({ mesh, x, z, radius: size * 0.62, blocking: true, kind: "crate" });
+    } else if (roll < 0.8) {
+      const r = rand(0.7, 1.1);
+      const h = rand(3, 5.5);
+      const mesh = new THREE.Mesh(
+        new THREE.CylinderGeometry(r, r, h, 10),
+        new THREE.MeshStandardMaterial({ color: 0x2c6b7a, emissive: 0x123844, emissiveIntensity: 0.4 })
+      );
+      mesh.position.set(x, h / 2, z);
+      scene.add(mesh);
+      obstacles.push({ mesh, x, z, radius: r + 0.4, blocking: true, kind: "pillar" });
+    } else {
+      const r = rand(2.2, 3.6);
+      const mesh = new THREE.Mesh(
+        new THREE.CircleGeometry(r, 24),
+        new THREE.MeshBasicMaterial({ color: 0xff5d3a, transparent: true, opacity: 0.35, side: THREE.DoubleSide })
+      );
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.position.set(x, 0.05, z);
+      scene.add(mesh);
+      obstacles.push({ mesh, x, z, radius: r, blocking: false, kind: "hazard", pulse: rand(0, Math.PI * 2) });
+    }
+  }
 }
 
 /* ------------------------------
    ENEMY SPAWNING
 --------------------------------*/
+function pickEnemyType() {
+  const roll = Math.random();
+  if (wave >= 4 && roll < 0.22) return "tank";
+  if (wave >= 2 && roll < 0.5) return "runner";
+  return "grunt";
+}
 function spawnEnemies(n) {
+  const margin = ARENA_SIZE / 2 - 4;
+  const hpScale = 1 + (wave - 1) * 0.22;
+  const speedScale = 1 + Math.min(0.6, (wave - 1) * 0.08);
   for (let i = 0; i < n; i++) {
+    const type = pickEnemyType();
+    const stats = ENEMY_TYPES[type];
     const e = new THREE.Mesh(
-      new THREE.BoxGeometry(1.2, 2, 1.2),
-      new THREE.MeshStandardMaterial({ color: 0xff5555 })
+      new THREE.BoxGeometry(stats.w, stats.h, stats.d),
+      new THREE.MeshStandardMaterial({ color: stats.color })
     );
-    e.position.set((Math.random() - 0.5) * 40, 1, (Math.random() - 0.5) * 40);
-    e.userData.hp = 3;
-    e.userData.speed = 2 + Math.random();
+    let x, z, tries = 0;
+    do { x = rand(-margin, margin); z = rand(-margin, margin); tries++; }
+    while (Math.hypot(x - camera.position.x, z - camera.position.z) < 14 && tries < 20);
+    e.position.set(x, stats.h / 2, z);
+    e.userData.type = type;
+    e.userData.maxHp = Math.round(stats.hp * hpScale);
+    e.userData.hp = e.userData.maxHp;
+    e.userData.speed = stats.speed * speedScale * rand(0.9, 1.1);
+    e.userData.radius = stats.radius;
+    e.userData.dmg = stats.dmg;
+    e.userData.scoreValue = stats.score;
+    e.userData.contactCd = 0;
     scene.add(e);
     enemies.push(e);
   }
@@ -151,7 +304,10 @@ function spawnEnemies(n) {
    SHOOTING
 --------------------------------*/
 function shoot() {
-  if (!startTime || gameOver) return;
+  if (!startTime || gameOver || paused) return;
+  const now = performance.now() / 1000;
+  if (now - lastShotTime < player.fireInterval) return;
+  lastShotTime = now;
 
   const bullet = new THREE.Mesh(
     new THREE.SphereGeometry(0.15, 8, 8),
@@ -163,7 +319,8 @@ function shoot() {
 
   bullet.position.copy(camera.position);
   bullet.userData.velocity = dir.multiplyScalar(40);
-  bullet.userData.life = 1.5;
+  bullet.userData.life = 1.8;
+  bullet.userData.pierce = player.pierce;
 
   scene.add(bullet);
   bullets.push(bullet);
@@ -178,11 +335,14 @@ let moveX = 0, moveY = 0;
 let isTouchingRight = false;
 let lastTouchX = 0, lastTouchY = 0;
 
+function beginGame() {
+  if (startTime) return;
+  centerMsg.style.display = "none";
+  startTime = performance.now();
+}
+
 function setupTouchControls() {
-  centerMsg.addEventListener("touchstart", () => {
-    centerMsg.style.display = "none";
-    startTime = performance.now();
-  });
+  centerMsg.addEventListener("touchstart", beginGame);
 
   /* Joystick movement */
   joystick.addEventListener("touchstart", (e) => {
@@ -242,21 +402,115 @@ function setupTouchControls() {
 }
 
 /* ------------------------------
+   DESKTOP CONTROLS (keyboard + mouse) — the original was touch-only,
+   which meant it couldn't be played or QA'd in a normal desktop browser.
+--------------------------------*/
+const keys = new Set();
+function setupDesktopControls() {
+  if (!("ontouchstart" in window)) desktopHint.style.display = "block";
+
+  window.addEventListener("keydown", (e) => { keys.add(e.code); if (e.code === "Space") { e.preventDefault(); shoot(); } });
+  window.addEventListener("keyup", (e) => keys.delete(e.code));
+
+  centerMsg.addEventListener("click", () => {
+    beginGame();
+    renderer.domElement.requestPointerLock && renderer.domElement.requestPointerLock();
+  });
+
+  renderer.domElement.addEventListener("click", () => {
+    if (!startTime) { beginGame(); }
+    if (document.pointerLockElement !== renderer.domElement) {
+      renderer.domElement.requestPointerLock && renderer.domElement.requestPointerLock();
+    } else {
+      shoot();
+    }
+  });
+
+  document.addEventListener("mousemove", (e) => {
+    if (document.pointerLockElement !== renderer.domElement) return;
+    camera.rotation.y -= e.movementX * 0.0025;
+    camera.rotation.x -= e.movementY * 0.0025;
+    camera.rotation.x = Math.max(-1.2, Math.min(1.2, camera.rotation.x));
+  });
+}
+function desktopMoveAxes() {
+  let dx = 0, dy = 0;
+  if (keys.has("KeyW") || keys.has("ArrowUp")) dy -= 1;
+  if (keys.has("KeyS") || keys.has("ArrowDown")) dy += 1;
+  if (keys.has("KeyA") || keys.has("ArrowLeft")) dx -= 1;
+  if (keys.has("KeyD") || keys.has("ArrowRight")) dx += 1;
+  const len = Math.hypot(dx, dy);
+  if (len > 1) { dx /= len; dy /= len; }
+  return [dx, dy];
+}
+
+/* ------------------------------
+   LEVEL UP / WAVE PROGRESSION
+   Upgrades get harder to reach as waves climb (kill quota grows each time),
+   matching the "harder to level up" goal.
+--------------------------------*/
+function triggerLevelUp() {
+  paused = true;
+  const pool = [...UPGRADE_POOL];
+  const picks = [];
+  for (let i = 0; i < 3 && pool.length > 0; i++) {
+    picks.push(pool.splice(randInt(0, pool.length - 1), 1)[0]);
+  }
+  levelUpCards.innerHTML = "";
+  picks.forEach((u) => {
+    const div = document.createElement("div");
+    div.className = "upCard";
+    div.innerHTML = `<b>${u.name}</b><span>${u.desc}</span>`;
+    const pick = () => {
+      u.apply();
+      levelUpPanel.classList.remove("active");
+      paused = false;
+      wave++;
+      waveEl.textContent = wave;
+      killsToNextWave = 6 + wave * 4; // grows each wave — harder to reach next level-up
+      spawnEnemies(3 + Math.floor(wave * 1.4));
+    };
+    div.addEventListener("click", pick);
+    div.addEventListener("touchend", (e) => { e.preventDefault(); pick(); });
+    levelUpCards.appendChild(div);
+  });
+  levelUpPanel.classList.add("active");
+}
+
+function updateHUD() {
+  hpBarFill.style.width = `${clamp((player.hp / player.maxHp) * 100, 0, 100)}%`;
+}
+
+/* ------------------------------
    GAME LOOP
 --------------------------------*/
 function animate() {
   requestAnimationFrame(animate);
 
   const now = performance.now();
-  const delta = (now - lastTime) / 1000;
+  const delta = Math.min(0.05, (now - lastTime) / 1000);
   lastTime = now;
 
   update(delta);
   renderer.render(scene, camera);
 }
 
+function resolveObstacleCollision(pos, radius) {
+  for (const o of obstacles) {
+    if (!o.blocking) continue;
+    const dx = pos.x - o.x, dz = pos.z - o.z;
+    const d = Math.hypot(dx, dz);
+    const minD = o.radius + radius;
+    if (d < minD && d > 0.0001) {
+      const push = (minD - d) / d;
+      pos.x += dx * push;
+      pos.z += dz * push;
+    }
+  }
+}
+
 function update(delta) {
-  if (gameOver || !startTime) return;
+  if (gameOver || !startTime || paused) return;
 
   /* Timer */
   const elapsed = performance.now() - startTime;
@@ -267,52 +521,114 @@ function update(delta) {
   if (remaining <= 0) {
     gameOver = true;
     centerMsg.style.display = "block";
-    centerMsg.textContent = `Time's up! Score: ${score}`;
+    centerMsg.textContent = `Time's up! Score: ${score} (Wave ${wave})`;
+    document.exitPointerLock && document.exitPointerLock();
   }
 
   /* Movement */
-  const speed = 10 * delta;
+  const [dkx, dky] = desktopMoveAxes();
+  const mvX = clamp(moveX + dkx, -1, 1);
+  const mvY = clamp(moveY + dky, -1, 1);
+  const speed = 10 * player.speedMult * delta;
   const forward = new THREE.Vector3(Math.sin(camera.rotation.y), 0, Math.cos(camera.rotation.y));
   const right = new THREE.Vector3(forward.z, 0, -forward.x);
 
-  camera.position.addScaledVector(forward, -moveY * speed);
-  camera.position.addScaledVector(right, moveX * speed);
+  camera.position.addScaledVector(forward, -mvY * speed);
+  camera.position.addScaledVector(right, mvX * speed);
+
+  const half = ARENA_SIZE / 2 - 1;
+  camera.position.x = clamp(camera.position.x, -half, half);
+  camera.position.z = clamp(camera.position.z, -half, half);
+  resolveObstacleCollision(camera.position, 0.6);
+
+  if (player.invuln > 0) player.invuln -= delta;
+
+  /* Hazard zones damage the player over time */
+  for (const o of obstacles) {
+    if (o.kind !== "hazard") continue;
+    o.pulse += delta * 3;
+    o.mesh.material.opacity = 0.25 + 0.15 * Math.sin(o.pulse);
+    const d = Math.hypot(camera.position.x - o.x, camera.position.z - o.z);
+    if (d < o.radius) {
+      player.hp -= 18 * delta;
+      updateHUD();
+    }
+  }
 
   /* Bullets */
   for (let i = bullets.length - 1; i >= 0; i--) {
     const b = bullets[i];
     b.position.addScaledVector(b.userData.velocity, delta);
     b.userData.life -= delta;
-    if (b.userData.life <= 0) {
+    let dead = b.userData.life <= 0;
+    if (!dead) {
+      for (const o of obstacles) {
+        if (!o.blocking) continue;
+        if (Math.hypot(b.position.x - o.x, b.position.z - o.z) < o.radius) { dead = true; break; }
+      }
+    }
+    if (dead) {
       scene.remove(b);
       bullets.splice(i, 1);
     }
   }
 
   /* Enemies */
-  enemies.forEach((e, idx) => {
+  for (let idx = enemies.length - 1; idx >= 0; idx--) {
+    const e = enemies[idx];
     const dir = camera.position.clone().sub(e.position);
     dir.y = 0;
+    const distToPlayer = dir.length();
     dir.normalize();
+    const prevPos = e.position.clone();
     e.position.addScaledVector(dir, e.userData.speed * delta);
+    resolveObstacleCollision(e.position, e.userData.radius);
+    e.position.y = prevPos.y;
 
-    bullets.forEach((b, bi) => {
-      if (b.position.distanceTo(e.position) < 1.2) {
+    if (e.userData.contactCd > 0) e.userData.contactCd -= delta;
+    if (distToPlayer < e.userData.radius + 0.8 && e.userData.contactCd <= 0 && player.invuln <= 0) {
+      player.hp -= e.userData.dmg;
+      player.invuln = 0.6;
+      e.userData.contactCd = 0.8;
+      updateHUD();
+      if (player.hp <= 0) {
+        player.hp = 0;
+        gameOver = true;
+        centerMsg.style.display = "block";
+        centerMsg.textContent = `Your mech was destroyed! Score: ${score} (Wave ${wave})`;
+        document.exitPointerLock && document.exitPointerLock();
+        updateHUD();
+      }
+    }
+
+    for (let bi = bullets.length - 1; bi >= 0; bi--) {
+      const b = bullets[bi];
+      if (b.position.distanceTo(e.position) < e.userData.radius + 0.3) {
         e.userData.hp--;
-        scene.remove(b);
-        bullets.splice(bi, 1);
+        if (b.userData.pierce > 0) b.userData.pierce--;
+        else { scene.remove(b); bullets.splice(bi, 1); }
 
         if (e.userData.hp <= 0) {
-          score += 10;
+          score += e.userData.scoreValue;
+          kills++;
           scoreEl.textContent = score;
           scene.remove(e);
           enemies.splice(idx, 1);
-          spawnEnemies(1);
+          if (kills >= killsToNextWave) {
+            kills = 0;
+            triggerLevelUp();
+          } else {
+            spawnEnemies(1);
+          }
         }
+        break;
       }
-    });
-  });
+    }
+  }
 }
+
+init();
+animate();
 </script>
 </body>
 </html>

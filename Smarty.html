@@ -12,11 +12,15 @@
     overflow: hidden;
     touch-action: none;
     font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    width: 100%;
+    height: 100%;
   }
   canvas {
     display: block;
     background: #6ec5ff;
     touch-action: none;
+    width: 100%;
+    height: 100%;
   }
   #hud {
     position: fixed;
@@ -47,6 +51,12 @@
     border-radius: 10px;
     z-index: 30;
   }
+  #banner {
+    position: fixed; top: 18%; left: 50%; transform: translate(-50%,0);
+    color: #ffe082; font-size: 20px; font-weight: bold; text-shadow: 0 2px 4px rgba(0,0,0,0.7);
+    z-index: 30; pointer-events: none; opacity: 0; transition: opacity 0.4s ease;
+  }
+  #banner.show { opacity: 1; }
   #menu, #shop {
     position: fixed;
     inset: 0;
@@ -69,6 +79,9 @@
   }
   .menuBtn:active {
     transform: scale(0.97);
+  }
+  .menuBtn:disabled {
+    background: #555; color: #aaa; cursor: not-allowed;
   }
   #touchControls {
     position: fixed;
@@ -99,11 +112,15 @@
     pointer-events: auto;
     user-select: none;
   }
+  #desktopHint {
+    position: fixed; bottom: 8px; left: 8px; z-index: 10; font-size: 11px; color: #fff;
+    background: rgba(0,0,0,0.35); padding: 4px 8px; border-radius: 6px; display: none; pointer-events: none;
+  }
 </style>
 </head>
 <body>
 
-<canvas id="game" width="900" height="500"></canvas>
+<canvas id="game"></canvas>
 
 <div id="hud">
   <span>Coins: <span id="coins">0</span></span>
@@ -112,12 +129,15 @@
   <span style="text-decoration:underline;cursor:pointer;" id="shopBtn">Shop</span>
 </div>
 
+<div id="banner"></div>
 <div id="centerMsg" style="display:none;"></div>
+<div id="desktopHint">Arrow/WASD to move · Space/Up to jump (double-jump once unlocked)</div>
 
 <div id="menu">
   <h2>Mini Mario Run – iPad</h2>
   <button class="menuBtn" data-level="0">Play Level 1</button>
   <button class="menuBtn" data-level="1">Play Level 2</button>
+  <button class="menuBtn" data-level="2">Play Level 3</button>
   <button class="menuBtn" id="openShopFromMenu">Coin Shop</button>
 </div>
 
@@ -125,9 +145,9 @@
   <h2>Coin Shop</h2>
   <p>Coins: <span id="shopCoins">0</span></p>
   <button class="menuBtn" data-skin="default">Default (Free)</button>
-  <button class="menuBtn" data-skin="red">Red Suit – 10 coins</button>
-  <button class="menuBtn" data-skin="blue">Blue Suit – 10 coins</button>
-  <button class="menuBtn" data-skin="gold">Gold Suit – 25 coins</button>
+  <button class="menuBtn" data-skin="red">Red Suit – 16 coins</button>
+  <button class="menuBtn" data-skin="blue">Blue Suit – 16 coins</button>
+  <button class="menuBtn" data-skin="gold">Gold Suit – 40 coins</button>
   <button class="menuBtn" id="closeShop">Back</button>
 </div>
 
@@ -142,6 +162,7 @@
 </div>
 
 <script>
+"use strict";
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 
@@ -149,10 +170,12 @@ const coinsEl = document.getElementById("coins");
 const livesEl = document.getElementById("lives");
 const timeEl = document.getElementById("time");
 const centerMsg = document.getElementById("centerMsg");
+const banner = document.getElementById("banner");
 const menu = document.getElementById("menu");
 const shop = document.getElementById("shop");
 const shopCoinsEl = document.getElementById("shopCoins");
 const shopBtn = document.getElementById("shopBtn");
+const desktopHint = document.getElementById("desktopHint");
 
 let gameState = "menu"; // "menu", "game", "shop"
 let currentLevelIndex = 0;
@@ -161,6 +184,24 @@ let lives = 3;
 let startTime = 0;
 let elapsedTime = 0;
 let skin = "default";
+
+/* ------------------------------
+   RESPONSIVE VIEWPORT
+   The original shipped a hardcoded 900x500 canvas that left most of a real
+   browser window empty. viewW/viewH are the logical (CSS-pixel) play area;
+   canvas.width/height stay in device pixels for crispness.
+--------------------------------*/
+let viewW = window.innerWidth, viewH = window.innerHeight;
+function resizeCanvas() {
+  viewW = window.innerWidth;
+  viewH = window.innerHeight;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.round(viewW * dpr);
+  canvas.height = Math.round(viewH * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener("resize", resizeCanvas);
+resizeCanvas();
 
 // Simple sounds (may or may not play depending on Safari settings)
 const sndCoin = new Audio("data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=");
@@ -173,6 +214,7 @@ const gravity = 2000;
 const moveSpeed = 260;
 const jumpSpeed = 750;
 const tileSize = 50;
+// Tile ids: 0 empty, 1 ground, 2 coin, 3 flag, 4 spike (hazard), 5 breakable brick
 
 // Player
 const player = {
@@ -183,85 +225,167 @@ const player = {
   w: 32,
   h: 46,
   onGround: false,
-  facing: 1
+  facing: 1,
+  midAirJumpUsed: false,
 };
 
 let cameraX = 0;
 
+/* ------------------------------
+   PERSISTED META-PROGRESSION
+   Levels unlock sequentially (beat one to open the next) and double-jump is
+   a real, coin-gated power-up — this game previously had no leveling
+   system at all beyond a flat cosmetic shop.
+--------------------------------*/
+const DOUBLE_JUMP_COST = 20;
+let unlocked = [true, false, false];
+let totalCoinsEver = 0;
+let doubleJumpUnlocked = false;
+try {
+  const savedUnlocked = JSON.parse(localStorage.getItem("smarty_unlocked") || "null");
+  if (Array.isArray(savedUnlocked)) unlocked = [true, !!savedUnlocked[1], !!savedUnlocked[2]];
+  totalCoinsEver = parseInt(localStorage.getItem("smarty_totalCoins") || "0", 10) || 0;
+  doubleJumpUnlocked = localStorage.getItem("smarty_doubleJump") === "1";
+} catch (e) {}
+function persistMeta() {
+  try {
+    localStorage.setItem("smarty_unlocked", JSON.stringify(unlocked));
+    localStorage.setItem("smarty_totalCoins", String(totalCoinsEver));
+    localStorage.setItem("smarty_doubleJump", doubleJumpUnlocked ? "1" : "0");
+  } catch (e) {}
+}
+function showBanner(text) {
+  banner.textContent = text;
+  banner.classList.add("show");
+  setTimeout(() => banner.classList.remove("show"), 2600);
+}
+function gainCoin(n) {
+  coins += n;
+  totalCoinsEver += n;
+  coinsEl.textContent = coins;
+  sndCoin.play().catch(() => {});
+  if (!doubleJumpUnlocked && totalCoinsEver >= DOUBLE_JUMP_COST) {
+    doubleJumpUnlocked = true;
+    showBanner("Double Jump unlocked! Press jump again in mid-air.");
+  }
+  persistMeta();
+}
+
 // Input
 const keys = { left: false, right: false, jump: false };
+let prevJump = false;
 
-// Touch controls
-function bindTouch(btn, prop) {
-  btn.addEventListener("touchstart", e => {
-    e.preventDefault();
-    keys[prop] = true;
-  });
-  btn.addEventListener("touchend", e => {
-    e.preventDefault();
-    keys[prop] = false;
-  });
-  btn.addEventListener("touchcancel", e => {
-    e.preventDefault();
-    keys[prop] = false;
-  });
+// Touch + mouse controls (pointer events cover both)
+function bindHold(btn, prop) {
+  const down = (e) => { e.preventDefault(); keys[prop] = true; };
+  const up = (e) => { e.preventDefault(); keys[prop] = false; };
+  btn.addEventListener("pointerdown", down);
+  btn.addEventListener("pointerup", up);
+  btn.addEventListener("pointercancel", up);
+  btn.addEventListener("pointerleave", up);
 }
-bindTouch(document.getElementById("btnLeft"), "left");
-bindTouch(document.getElementById("btnRight"), "right");
-bindTouch(document.getElementById("btnJump"), "jump");
+bindHold(document.getElementById("btnLeft"), "left");
+bindHold(document.getElementById("btnRight"), "right");
+bindHold(document.getElementById("btnJump"), "jump");
 
-// Levels: tiles + enemies + moving platforms
-// tile: 0 empty, 1 ground, 2 coin, 3 flag
+// Desktop keyboard
+window.addEventListener("keydown", (e) => {
+  if (["ArrowLeft", "KeyA"].includes(e.code)) keys.left = true;
+  if (["ArrowRight", "KeyD"].includes(e.code)) keys.right = true;
+  if (["ArrowUp", "KeyW", "Space"].includes(e.code)) { keys.jump = true; e.preventDefault(); }
+});
+window.addEventListener("keyup", (e) => {
+  if (["ArrowLeft", "KeyA"].includes(e.code)) keys.left = false;
+  if (["ArrowRight", "KeyD"].includes(e.code)) keys.right = false;
+  if (["ArrowUp", "KeyW", "Space"].includes(e.code)) keys.jump = false;
+});
+if (!("ontouchstart" in window)) desktopHint.style.display = "block";
+
+/* ------------------------------
+   LEVELS — wider, with pits, spike hazards, breakable bricks, moving
+   platforms and more enemies. Difficulty (enemy/platform speed) climbs
+   with level index.
+--------------------------------*/
 const levels = [
   {
-    width: 60,
-    height: 10,
-    tiles: [],
+    width: 90, height: 10,
+    pits: [64, 74],
+    platformTiles: [5,10,15,20,25,30,35,40,45,50,60,65,70,75,80,85],
+    coinTiles: [8,14,22,28,36,44,58,63,68,73,78,83],
+    spikeTiles: [82],
+    brickTiles: [67,77],
+    flagX: 88,
     enemies: [
-      {x: 600, y: 9*tileSize-25, dir: -1, minX: 550, maxX: 750},
-      {x: 1200, y: 9*tileSize-25, dir: 1, minX: 1150, maxX: 1350}
+      {x:600, y:9*tileSize-25, dir:-1, minX:550, maxX:750, speed:90},
+      {x:1200, y:9*tileSize-25, dir:1, minX:1150, maxX:1350, speed:90},
+      {x:3300, y:9*tileSize-25, dir:-1, minX:3200, maxX:3450, speed:100},
+      {x:4000, y:9*tileSize-25, dir:1, minX:3900, maxX:4200, speed:100},
     ],
     platforms: [
-      {x: 900, y: 7*tileSize, w: tileSize*2, h: 10, dir: 1, minX: 850, maxX: 1050}
-    ]
+      {x:900, y:7*tileSize, w:tileSize*2, h:10, dir:1, minX:850, maxX:1050, speed:80},
+    ],
   },
   {
-    width: 70,
-    height: 10,
-    tiles: [],
+    width: 110, height: 10,
+    pits: [64, 79, 94],
+    platformTiles: [6,12,18,24,30,36,42,48,54,60,66,72,78,84,90,96,102],
+    coinTiles: [9,16,23,31,39,47,55,61,67,75,83,91,99,105],
+    spikeTiles: [70,100],
+    brickTiles: [63,88],
+    flagX: 108,
     enemies: [
-      {x: 800, y: 9*tileSize-25, dir: 1, minX: 750, maxX: 950},
-      {x: 1500, y: 7*tileSize-25, dir: -1, minX: 1400, maxX: 1650}
+      {x:800, y:9*tileSize-25, dir:1, minX:750, maxX:950, speed:110},
+      {x:1500, y:7*tileSize-25, dir:-1, minX:1400, maxX:1650, speed:110},
+      {x:3600, y:9*tileSize-25, dir:-1, minX:3500, maxX:3800, speed:120},
+      {x:4600, y:9*tileSize-25, dir:1, minX:4500, maxX:4800, speed:120},
+      {x:5200, y:9*tileSize-25, dir:-1, minX:5100, maxX:5350, speed:130},
     ],
     platforms: [
-      {x: 600, y: 6*tileSize, w: tileSize*2, h: 10, dir: 1, minX: 550, maxX: 800},
-      {x: 1300, y: 5*tileSize, w: tileSize*2, h: 10, dir: -1, minX: 1200, maxX: 1500}
-    ]
-  }
+      {x:600, y:6*tileSize, w:tileSize*2, h:10, dir:1, minX:550, maxX:800, speed:90},
+      {x:1300, y:5*tileSize, w:tileSize*2, h:10, dir:-1, minX:1200, maxX:1500, speed:90},
+      {x:4200, y:6*tileSize, w:tileSize*2, h:10, dir:1, minX:4100, maxX:4400, speed:100},
+    ],
+  },
+  {
+    width: 130, height: 10,
+    pits: [22, 50, 78, 106],
+    platformTiles: [10,16,26,34,42,54,62,68,76,84,92,100,108,116,124],
+    coinTiles: [12,19,28,36,44,56,64,70,78,86,94,102,110,118,126],
+    spikeTiles: [15,60,90,118],
+    brickTiles: [30,66,102],
+    flagX: 128,
+    enemies: [
+      {x:700, y:9*tileSize-25, dir:1, minX:650, maxX:900, speed:140},
+      {x:1500, y:9*tileSize-25, dir:-1, minX:1400, maxX:1650, speed:140},
+      {x:2600, y:9*tileSize-25, dir:1, minX:2500, maxX:2750, speed:150},
+      {x:3400, y:7*tileSize-25, dir:-1, minX:3300, maxX:3550, speed:150},
+      {x:4500, y:9*tileSize-25, dir:1, minX:4400, maxX:4650, speed:160},
+      {x:5600, y:9*tileSize-25, dir:-1, minX:5500, maxX:5800, speed:160},
+    ],
+    platforms: [
+      {x:1000, y:6*tileSize, w:tileSize*2, h:10, dir:1, minX:900, maxX:1200, speed:110},
+      {x:3000, y:5*tileSize, w:tileSize*2, h:10, dir:-1, minX:2900, maxX:3200, speed:110},
+      {x:4900, y:6*tileSize, w:tileSize*2, h:10, dir:1, minX:4800, maxX:5100, speed:120},
+    ],
+  },
 ];
 
 // Build tile maps
 function buildLevelData() {
-  levels.forEach((lvl, idx) => {
-    const w = lvl.width;
-    const h = lvl.height;
+  levels.forEach((lvl) => {
+    const w = lvl.width, h = lvl.height;
     lvl.tiles = [];
-    for (let x = 0; x < w; x++) {
-      lvl.tiles[x] = [];
-      for (let y = 0; y < h; y++) lvl.tiles[x][y] = 0;
-    }
-    // Ground
-    for (let x = 0; x < w; x++) lvl.tiles[x][h-1] = 1;
-    // Platforms & coins per level
-    if (idx === 0) {
-      [5,10,15,20,25,30,35,40,45,50].forEach(x => lvl.tiles[x][7] = 1);
-      [8,14,22,28,36,44].forEach(x => lvl.tiles[x][5] = 2);
-      lvl.tiles[55][8] = 3;
-    } else {
-      [6,12,18,24,30,36,42,48,54,60].forEach(x => lvl.tiles[x][7] = 1);
-      [9,16,23,31,39,47,55].forEach(x => lvl.tiles[x][5] = 2);
-      lvl.tiles[65][8] = 3;
-    }
+    for (let x = 0; x < w; x++) { lvl.tiles[x] = []; for (let y = 0; y < h; y++) lvl.tiles[x][y] = 0; }
+    const pitSet = new Set(lvl.pits || []);
+    for (let x = 0; x < w; x++) if (!pitSet.has(x)) lvl.tiles[x][h-1] = 1;
+    (lvl.platformTiles || []).forEach(x => { if (x >= 0 && x < w) lvl.tiles[x][7] = 1; });
+    (lvl.coinTiles || []).forEach(x => { if (x >= 0 && x < w) lvl.tiles[x][5] = 2; });
+    (lvl.spikeTiles || []).forEach(x => { if (x >= 0 && x < w) lvl.tiles[x][h-2] = 4; });
+    (lvl.brickTiles || []).forEach(x => { if (x >= 0 && x < w) lvl.tiles[x][6] = 5; });
+    lvl.tiles[lvl.flagX][8] = 3;
+    // reset per-run enemy/platform state
+    lvl._enemies = lvl.enemies.map(e => ({ ...e, dead: false }));
+    lvl._platforms = lvl.platforms.map(p => ({ ...p }));
   });
 }
 buildLevelData();
@@ -270,21 +394,20 @@ function currentLevel() {
   return levels[currentLevelIndex];
 }
 
-function tileAt(px, py) {
-  const lvl = currentLevel();
-  const tx = Math.floor(px / tileSize);
-  const ty = Math.floor(py / tileSize);
-  if (tx < 0 || tx >= lvl.width || ty < 0 || ty >= lvl.height) return 0;
-  return lvl.tiles[tx][ty];
+function renderMenu() {
+  levels.forEach((lvl, i) => {
+    const btn = document.querySelector(`#menu .menuBtn[data-level="${i}"]`);
+    if (!btn) return;
+    if (unlocked[i]) {
+      btn.disabled = false;
+      btn.textContent = `Play Level ${i+1}`;
+    } else {
+      btn.disabled = true;
+      btn.textContent = `🔒 Level ${i+1} (beat Level ${i})`;
+    }
+  });
 }
-
-function setTile(px, py, v) {
-  const lvl = currentLevel();
-  const tx = Math.floor(px / tileSize);
-  const ty = Math.floor(py / tileSize);
-  if (tx < 0 || tx >= lvl.width || ty < 0 || ty >= lvl.height) return;
-  lvl.tiles[tx][ty] = v;
-}
+renderMenu();
 
 function resetPlayer() {
   player.x = 100;
@@ -292,11 +415,17 @@ function resetPlayer() {
   player.vx = 0;
   player.vy = 0;
   player.onGround = false;
+  player.midAirJumpUsed = false;
   cameraX = 0;
 }
 
 function startLevel(index) {
+  if (!unlocked[index]) return;
   currentLevelIndex = index;
+  // fresh enemy/platform state each attempt
+  const lvl = levels[index];
+  lvl._enemies = lvl.enemies.map(e => ({ ...e, dead: false }));
+  lvl._platforms = lvl.platforms.map(p => ({ ...p }));
   resetPlayer();
   gameState = "game";
   startTime = performance.now();
@@ -305,25 +434,19 @@ function startLevel(index) {
 }
 
 document.querySelectorAll("#menu .menuBtn[data-level]").forEach(btn => {
-  btn.addEventListener("touchstart", e => {
-    e.preventDefault();
+  btn.addEventListener("click", () => {
     const lvl = parseInt(btn.getAttribute("data-level"), 10);
+    if (!unlocked[lvl]) return;
     menu.style.display = "none";
     startLevel(lvl);
     requestAnimationFrame(loop);
   });
 });
 
-document.getElementById("openShopFromMenu").addEventListener("touchstart", e => {
-  e.preventDefault();
-  openShop();
-});
+document.getElementById("openShopFromMenu").addEventListener("click", () => openShop());
 
-shopBtn.addEventListener("touchstart", e => {
-  e.preventDefault();
-  if (gameState === "game") {
-    openShop();
-  }
+shopBtn.addEventListener("click", () => {
+  if (gameState === "game") openShop();
 });
 
 function openShop() {
@@ -334,8 +457,7 @@ function openShop() {
   shopCoinsEl.textContent = coins;
 }
 
-document.getElementById("closeShop").addEventListener("touchstart", e => {
-  e.preventDefault();
+document.getElementById("closeShop").addEventListener("click", () => {
   shop.style.display = "none";
   if (startTime) {
     gameState = "game";
@@ -343,23 +465,23 @@ document.getElementById("closeShop").addEventListener("touchstart", e => {
   } else {
     gameState = "menu";
     menu.style.display = "flex";
+    renderMenu();
   }
 });
 
 document.querySelectorAll("#shop .menuBtn[data-skin]").forEach(btn => {
-  btn.addEventListener("touchstart", e => {
-    e.preventDefault();
+  btn.addEventListener("click", () => {
     const s = btn.getAttribute("data-skin");
     if (s === "default") {
       skin = "default";
-    } else if (s === "red" && coins >= 10) {
-      coins -= 10;
+    } else if (s === "red" && coins >= 16) {
+      coins -= 16;
       skin = "red";
-    } else if (s === "blue" && coins >= 10) {
-      coins -= 10;
+    } else if (s === "blue" && coins >= 16) {
+      coins -= 16;
       skin = "blue";
-    } else if (s === "gold" && coins >= 25) {
-      coins -= 25;
+    } else if (s === "gold" && coins >= 40) {
+      coins -= 40;
       skin = "gold";
     }
     coinsEl.textContent = coins;
@@ -380,6 +502,7 @@ function loseLife() {
     coinsEl.textContent = coins;
     livesEl.textContent = lives;
     startTime = 0;
+    renderMenu();
   } else {
     resetPlayer();
   }
@@ -392,6 +515,12 @@ function winLevel() {
   centerMsg.textContent = `Level complete! Time: ${elapsedTime.toFixed(1)}s`;
   centerMsg.style.display = "block";
   startTime = 0;
+  if (currentLevelIndex + 1 < unlocked.length && !unlocked[currentLevelIndex + 1]) {
+    unlocked[currentLevelIndex + 1] = true;
+    persistMeta();
+    showBanner(`Level ${currentLevelIndex + 2} unlocked!`);
+  }
+  renderMenu();
 }
 
 function update(dt) {
@@ -406,12 +535,19 @@ function update(dt) {
   if (keys.left) player.vx = -moveSpeed;
   if (keys.right) player.vx = moveSpeed;
 
-  // Jump
-  if (keys.jump && player.onGround) {
+  // Jump (edge-triggered so held input doesn't spam double-jumps)
+  const jumpJustPressed = keys.jump && !prevJump;
+  if (jumpJustPressed && player.onGround) {
     player.vy = -jumpSpeed;
     player.onGround = false;
+    player.midAirJumpUsed = false;
+    sndJump.play().catch(()=>{});
+  } else if (jumpJustPressed && !player.onGround && doubleJumpUnlocked && !player.midAirJumpUsed) {
+    player.vy = -jumpSpeed * 0.85;
+    player.midAirJumpUsed = true;
     sndJump.play().catch(()=>{});
   }
+  prevJump = keys.jump;
 
   // Gravity
   player.vy += gravity * dt;
@@ -433,13 +569,13 @@ function update(dt) {
 
   // Camera
   const lvl = currentLevel();
-  cameraX = player.x - canvas.width / 2;
+  cameraX = player.x - viewW / 2;
   if (cameraX < 0) cameraX = 0;
-  const maxCam = lvl.width * tileSize - canvas.width;
+  const maxCam = Math.max(0, lvl.width * tileSize - viewW);
   if (cameraX > maxCam) cameraX = maxCam;
 
   // Fall off
-  if (player.y > canvas.height + 200) {
+  if (player.y > viewH + 400) {
     loseLife();
   }
 }
@@ -474,15 +610,25 @@ function resolveCollisions(horizontal) {
         if (t === 2) {
           // Coin
           lvl.tiles[tx][ty] = 0;
-          coins++;
-          coinsEl.textContent = coins;
-          sndCoin.play().catch(()=>{});
+          gainCoin(1);
           continue;
         }
         if (t === 3) {
           // Flag
           winLevel();
           return;
+        }
+        if (t === 4) {
+          // Spike hazard — always deadly on contact
+          loseLife();
+          return;
+        }
+        if (t === 5 && !horizontal && player.vy < 0) {
+          // Breakable brick — only breaks when hit from below while jumping
+          lvl.tiles[tx][ty] = 0;
+          gainCoin(1);
+          player.vy = 0;
+          continue;
         }
 
         // Solid
@@ -495,6 +641,7 @@ function resolveCollisions(horizontal) {
             player.y = tileTop;
             player.vy = 0;
             player.onGround = true;
+            player.midAirJumpUsed = false;
           } else if (player.vy < 0) {
             player.y = tileBottom + h;
             player.vy = 0;
@@ -505,7 +652,7 @@ function resolveCollisions(horizontal) {
   }
 
   // Platforms (treated as solid)
-  const plats = lvl.platforms;
+  const plats = lvl._platforms;
   for (const p of plats) {
     const tileLeft = p.x;
     const tileRight = p.x + p.w;
@@ -518,6 +665,7 @@ function resolveCollisions(horizontal) {
           player.y = tileTop;
           player.vy = 0;
           player.onGround = true;
+          player.midAirJumpUsed = false;
         }
       }
     }
@@ -526,8 +674,9 @@ function resolveCollisions(horizontal) {
 
 function updatePlatforms(dt) {
   const lvl = currentLevel();
-  for (const p of lvl.platforms) {
-    p.x += p.dir * 80 * dt;
+  for (const p of lvl._platforms) {
+    const speed = p.speed || 80;
+    p.x += p.dir * speed * dt;
     if (p.x < p.minX) {
       p.x = p.minX;
       p.dir *= -1;
@@ -540,8 +689,9 @@ function updatePlatforms(dt) {
 
 function updateEnemies(dt) {
   const lvl = currentLevel();
-  for (const e of lvl.enemies) {
-    e.x += e.dir * 80 * dt;
+  for (const e of lvl._enemies) {
+    const speed = e.speed || 80;
+    e.x += e.dir * speed * dt;
     if (e.x < e.minX) {
       e.x = e.minX;
       e.dir *= -1;
@@ -577,21 +727,21 @@ function updateEnemies(dt) {
       }
     }
   }
-  lvl.enemies = lvl.enemies.filter(e => !e.dead);
+  lvl._enemies = lvl._enemies.filter(e => !e.dead);
 }
 
 function draw() {
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.clearRect(0, 0, viewW, viewH);
 
   const lvl = currentLevel();
 
   // Sky
   ctx.fillStyle = "#6ec5ff";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillRect(0, 0, viewW, viewH);
 
   // Tiles
   const startX = Math.floor(cameraX / tileSize);
-  const endX = startX + Math.ceil(canvas.width / tileSize) + 2;
+  const endX = startX + Math.ceil(viewW / tileSize) + 2;
 
   for (let x = startX; x < endX; x++) {
     if (x < 0 || x >= lvl.width) continue;
@@ -624,12 +774,32 @@ function draw() {
         ctx.lineTo(sx + tileSize/2 + 3, sy - 30);
         ctx.closePath();
         ctx.fill();
+      } else if (t === 4) {
+        ctx.fillStyle = "#5b6b73";
+        ctx.fillRect(sx, sy + tileSize - 6, tileSize, 6);
+        ctx.fillStyle = "#e0e6e8";
+        for (let s = 0; s < 3; s++) {
+          ctx.beginPath();
+          ctx.moveTo(sx + s * (tileSize/3), sy + tileSize - 6);
+          ctx.lineTo(sx + s * (tileSize/3) + tileSize/6, sy);
+          ctx.lineTo(sx + (s+1) * (tileSize/3), sy + tileSize - 6);
+          ctx.closePath();
+          ctx.fill();
+        }
+      } else if (t === 5) {
+        ctx.fillStyle = "#b5651d";
+        ctx.fillRect(sx, sy, tileSize, tileSize);
+        ctx.strokeStyle = "#7a3f10";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(sx+2, sy+2, tileSize-4, tileSize-4);
+        ctx.beginPath(); ctx.moveTo(sx, sy+tileSize/2); ctx.lineTo(sx+tileSize, sy+tileSize/2); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(sx+tileSize/2, sy); ctx.lineTo(sx+tileSize/2, sy+tileSize); ctx.stroke();
       }
     }
   }
 
   // Platforms
-  for (const p of lvl.platforms) {
+  for (const p of lvl._platforms) {
     const sx = p.x - cameraX;
     const sy = p.y;
     ctx.fillStyle = "#607d8b";
@@ -637,7 +807,7 @@ function draw() {
   }
 
   // Enemies
-  for (const e of lvl.enemies) {
+  for (const e of lvl._enemies) {
     const sx = e.x - cameraX;
     const sy = e.y;
     ctx.fillStyle = "#e53935";
@@ -676,7 +846,7 @@ function draw() {
 let lastTime = 0;
 function loop(ts) {
   if (gameState !== "game") return;
-  const dt = (ts - lastTime) / 1000;
+  const dt = Math.min(0.05, (ts - lastTime) / 1000);
   lastTime = ts;
 
   update(dt);
